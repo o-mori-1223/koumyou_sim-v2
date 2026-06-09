@@ -299,7 +299,13 @@ nk_idx_subst=nk_namelist.index('Silicon')
 nk_idx_film=nk_namelist.index('SiO2')
 
 
-inc_angle=st.sidebar.number_input('Incident angle [deg]',min_value=0.0,max_value=89.0,value=0.0,step=0.1,format='%3.1f')
+angle_mode=st.sidebar.radio('Angle mode',('Single angle (2D)','Angle sweep (3D)'),key='angle_mode')
+if angle_mode=='Single angle (2D)':
+    inc_angle=st.sidebar.number_input('Incident angle [deg]',min_value=0.0,max_value=89.0,value=0.0,step=0.1,format='%3.1f')
+else:
+    angle_range=st.sidebar.slider('Angle range [deg]',min_value=0.0,max_value=89.0,value=(0.0,80.0),step=1.0,format='%.0f')
+    angle_step=st.sidebar.number_input('Angle step [deg]',min_value=0.5,max_value=45.0,value=2.0,step=0.5,format='%.1f')
+    inc_angle=angle_range[0]   # 色計算・CSV用の代表角度（スイープ先頭）
 spMenu=('Visible[380-780nm]','UV[200-400nm]','NIR[700-1000nm]','All[200-1000nm]','Any')
 wl_option=st.sidebar.selectbox('Spetrum range',spMenu)
 if wl_option==spMenu[0]:
@@ -392,61 +398,82 @@ st.subheader('Spectrum')
 
 nkes_name_list=[n_env,nk_subst_name]
 
-inc_angle_rad=inc_angle*np.pi/180.0
 pitch_um=pitch_nm/1000.0
 wl_nm_ar=np.linspace(wl_min,wl_max,wl_n,dtype=float)
-
-(irp, itp,irs,its)=calc_rcwa1d(wl_nm_ar, inc_angle_rad, pitch_um, norder,nk_name_list,w_list,d_list,nkes_name_list)
-
-# Rp=np.sum(irp,axis=1)
-# Rs=np.sum(irs,axis=1)
-# Tp=np.sum(itp,axis=1)
-# Ts=np.sum(its,axis=1)
 idx_0 = norder // 2
-Rp = irp[:,idx_0]
-Rs = irs[:,idx_0]
-Tp = itp[:,idx_0]
-Ts = its[:,idx_0]
 
-fig = go.Figure()
+if angle_mode=='Single angle (2D)':
+    inc_angle_rad=inc_angle*np.pi/180.0
+    (irp, itp,irs,its)=calc_rcwa1d(wl_nm_ar, inc_angle_rad, pitch_um, norder,nk_name_list,w_list,d_list,nkes_name_list)
 
-gkind='Reflectance'
+    Rp = irp[:,idx_0]
+    Rs = irs[:,idx_0]
+    Tp = itp[:,idx_0]
+    Ts = its[:,idx_0]
 
-fig.add_trace(go.Scatter(
-    x=wl_nm_ar, y=Rp,
-    name='Rp',
-    mode='lines',
-    marker_color='rgba(255, 0, 0, .8)'
-))
-fig.add_trace(go.Scatter(
-    x=wl_nm_ar, y=Rs,
-    name='Rs',
-    mode='lines',
-    marker_color='rgba(0, 255, 0, .8)'
-))
-#fig.add_trace(go.Scatter(
-    #x=wl_nm_ar, y=Tp,
-    #name='Tp',
-    #mode='lines',
-    #marker_color='rgba(0, 255, 255, .8)'
-#))
-#fig.add_trace(go.Scatter(
-    #x=wl_nm_ar, y=Ts,
-    #name='Ts',
-    #mode='lines',
-    #marker_color='rgba(0, 0, 255, .8)'
-#))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=wl_nm_ar, y=Rp,
+        name='Rp',
+        mode='lines',
+        marker_color='rgba(255, 0, 0, .8)'
+    ))
+    fig.add_trace(go.Scatter(
+        x=wl_nm_ar, y=Rs,
+        name='Rs',
+        mode='lines',
+        marker_color='rgba(0, 255, 0, .8)'
+    ))
+    title_msg=f'AOI at {round(inc_angle,1)}[deg]'
+    fig.update_layout(title=title_msg,
+                    yaxis_zeroline=True, xaxis_zeroline=True)
+    fig.update_xaxes(title_text='Wavelength(nm)')
+    fig.update_yaxes(title_text='R',range=[0, 1])
+    st.plotly_chart(fig, use_container_width=True)
 
-# Set options common to all traces with fig.update_traces
-#fig.update_traces(mode='markers', marker_line_width=2, marker_size=10)
-title_msg=f'AOI at {round(inc_angle,1)}[deg]'
-fig.update_layout(title=title_msg,
-                yaxis_zeroline=True, xaxis_zeroline=True)
-#fig.update_layout(legend_title_text = "Contestant")
-fig.update_xaxes(title_text='Wavelength(nm)')
-fig.update_yaxes(title_text='R',range=[0, 1])
+else:
+    # 角度配列を作成（範囲＋刻み）
+    angle_ar=np.arange(angle_range[0], angle_range[1]+angle_step/2.0, angle_step, dtype=float)
+    nang=len(angle_ar)
 
-st.plotly_chart(fig, use_container_width=True)
+    Rp2d=np.empty([nang, wl_n],dtype=float)
+    Rs2d=np.empty([nang, wl_n],dtype=float)
+    Tp2d=np.empty([nang, wl_n],dtype=float)
+    Ts2d=np.empty([nang, wl_n],dtype=float)
+
+    prog=st.progress(0.0, text='Calculating angle sweep...')
+    for ia, ang in enumerate(angle_ar):
+        ang_rad=ang*np.pi/180.0
+        (irp, itp, irs, its)=calc_rcwa1d(wl_nm_ar, ang_rad, pitch_um, norder,nk_name_list,w_list,d_list,nkes_name_list)
+        Rp2d[ia,:]=irp[:,idx_0]
+        Rs2d[ia,:]=irs[:,idx_0]
+        Tp2d[ia,:]=itp[:,idx_0]
+        Ts2d[ia,:]=its[:,idx_0]
+        prog.progress((ia+1)/nang, text=f'Calculating angle sweep... {ia+1}/{nang}')
+    prog.empty()
+
+    pol_sel=st.radio('Polarization (3D surface)',('Rp','Rs'),horizontal=True,key='pol3d')
+    Z = Rp2d if pol_sel=='Rp' else Rs2d
+    fig = go.Figure(data=[go.Surface(
+        x=wl_nm_ar, y=angle_ar, z=Z,
+        colorscale='Viridis', cmin=0.0, cmax=1.0,
+        colorbar=dict(title='R')
+    )])
+    fig.update_layout(
+        title=f'{pol_sel}: Reflectance vs Wavelength & Angle',
+        scene=dict(
+            xaxis_title='Wavelength(nm)',
+            yaxis_title='Angle(deg)',
+            zaxis=dict(title='R', range=[0,1]),
+        ),
+        height=700,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 下流の色計算・CSV用に代表角度（先頭）のスペクトルを1Dとして用意
+    inc_angle=float(angle_ar[0])
+    Rp=Rp2d[0,:]; Rs=Rs2d[0,:]; Tp=Tp2d[0,:]; Ts=Ts2d[0,:]
+    st.caption(f'※ 下の色計算・CSVは代表角度 {round(inc_angle,1)}° のスペクトルに基づきます。')
 
 if wl_option==spMenu[0]:
     st.subheader('Colorimetry')
