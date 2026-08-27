@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
+# C++ build intermediates (compiled .pyd/.so binaries are committed directly under RCWA2D/)
+build/
+
 # Virtual environment
 .venv/
 venv/
