@@ -1,9 +1,25 @@
 """3-run減算法（vacuum / bare_substrate / disk）を実行し、孤立ナノ円盤の
 散乱効率スペクトル Q_scatter,up を求めるランナー。
 
-Q_scatter,upは、円盤が上半球方向・周囲へ再配分した電力／入射電力から
-求めた量であり、**厳密な4π全方向のMie散乱断面積でも、周期構造の
-反射率でもない**（詳細はgeometry.pyとHANDOVER.md参照）。
+【2026-09-24更新】Q_scatter,upは、円盤という摂動が全方向（上・側方・
+基板透過分の変化）に再配分した総電力／入射電力から求めた量。今回2つの
+独立なバグを修正した:
+  (1) geometry.pyのflux boxを球のMie検証と同じ「対象物を完全に包む閉じた箱」
+      方式に修正（以前の「上方向のみ・基板透過分は除外」という定義は、円盤
+      高さがbox_marginを超えると底面モニタが円盤内部を貫通するバグを内包
+      していたため撤回した）。
+  (2) 本関数呼び出し時のi0（下記`q = ...`の行）で、`-fluxA['top']`と符号を
+      反転させるように修正——光源が-z(下向き)伝搬なのに対し、'top'面はz法線
+      でMEEPの符号規約(+zが正)と伝搬方向が逆なため、fluxA['top']は常に負
+      だった。
+両方を直したことで、無損失材質なら球のMie散乱効率と同様に**常に0以上**に
+なるはずというサニティチェックが実際に通ることを確認済み（TiO2円盤/SiO2
+基板、height=100nm・300nmの両方でQ>0、詳細はdiag_meep_disk_boxmargin.py）。
+**厳密な4π全方向のMie散乱断面積そのもの（真空中の孤立散乱体の値）ではなく**、
+基板が半無限に存在する系での等価量である点は変わらず注意。「上から見た色」
+用途では基板透過分の変化も含む分だけ過大評価になりうる——将来「上方向のみ」
+に厳密化したい場合は、geometry.pyのdocstring末尾に記載した代替設計（円盤
+直上だけを覆う薄い箱）を検討すること。
 
 flux 6面の符号付き結合方法・幾何断面積での正規化・最後の符号反転は、
 MEEP公式のsphere-in-vacuum Mie散乱チュートリアルの式をそのまま踏襲した
@@ -124,7 +140,15 @@ def run_scattering_spectrum(radius_nm, height_nm, disk_medium, substrate_medium,
     simC, cfgC = _build('disk')
     _, fluxC, _ = _run_and_get_fluxes(simC, cfgC, load_from=dataB)
 
-    q = _scattering_efficiency_from_fluxes(fluxC, cfgC.flux_box.r_box, r_um, fluxA['top'])
+    # 光源は-z(下向き)伝搬だが、'top'面はz法線でMEEPの符号規約は+zが正 --
+    # 伝搬方向と規約の+方向が逆なので、fluxA['top'](真空runでの入射光量)は
+    # 常に負の値になる(2026-09-24に実測で確認: 全周波数で負)。
+    # _scattering_efficiency_from_fluxes()はsphere-in-vacuum検証(伝搬+x、
+    # 入射光量に規約と伝搬方向が一致する'x-'面を使用=正値)を前提に書かれて
+    # おり、正の入射光量を期待している。符号を反転して渡す必要がある
+    # (でないとQ_scatter,upの符号が常に反転する -- 無損失媒質なら本来
+    # 0以上のはずが常に負になっていた実際のバグがこれ)。
+    q = _scattering_efficiency_from_fluxes(fluxC, cfgC.flux_box.r_box, r_um, -fluxA['top'])
 
     meta = dict(radius_nm=radius_nm, height_nm=height_nm, resolution=resolution,
                 dpml=dpml, pad=pad, box_margin=box_margin, decay_by=decay_by,
