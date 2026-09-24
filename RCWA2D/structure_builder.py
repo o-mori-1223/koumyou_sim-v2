@@ -10,6 +10,8 @@ two independently-transcribed (and possibly divergently-buggy) versions of the g
 conversion.
 """
 
+import numpy as np
+
 ENV_MATERIAL = '__ENV__'
 SUBST_MATERIAL = '__SUBSTRATE__'
 
@@ -124,6 +126,81 @@ def columns_to_layers(columns, flat_align=False):
 
     result.reverse()   # Top-first
     return result
+
+
+def _column_edges(columns):
+    """列の左から右への絶対[x1, x2)座標(nm)のリストを返す。"""
+    edges, x = [], 0.0
+    for c in columns:
+        edges.append((x, x + c['width'])); x += c['width']
+    return edges
+
+
+def _graded_raise_height(H, x1, x2, s, pitch):
+    """位置sにおける、なめらか基板上げ列1本分の高さ寄与(super-Gaussian)。
+    h(s) = H * exp(-|((2s-x1-x2)/(x2-x1))|^n), n = 0.02*(x2-x1)
+    列の外側でも0にクリップせず裾を計算する(隣接列への侵入を許すため)。
+    周期境界(s=0, s=pitch)をまたいだ裾の回り込みも s±pitch の2像で評価する
+    (減衰長は列幅程度でpitchよりずっと小さいため、1次像で十分)。
+    """
+    w = x2 - x1
+    if w <= 1e-9 or H <= 1e-9:
+        return 0.0
+    n = 0.02 * w
+    best = 0.0
+    for k in (-1, 0, 1):
+        u = (2.0 * (s + k * pitch) - x1 - x2) / w
+        with np.errstate(over='ignore'):
+            val = H * float(np.exp(-np.power(abs(u), n)))
+        best = max(best, val)
+    return best
+
+
+def _sharp_raise_height(H, x1, x2, s):
+    """従来の矩形段差(列の外側では0、内側では常にH)。"""
+    return H if (x1 <= s < x2) else 0.0
+
+
+def expand_graded_columns(columns, n_slices):
+    """'graded'な基板上げを持つ列を、n_slices本の細い子列に展開する前処理。
+
+    各列は自分自身の[x1,x2)幅をn_slices等分する(周期全体を均等分割して
+    所属列を検索する方式だと、狭い列がどのビンにも当たらずfilm_layersが
+    消失しうるため不採用)。これにより所属は常にその列自身に一意に決まり、
+    film_layersが失われることはなく、幅の合計も厳密に保存される。
+
+    各子列の基板上げ高さは、全列(sharp/graded問わず)の高さ寄与関数を
+    その子列の中心位置で評価したときの最大値(max envelope)。'sharp'な
+    列も含めて展開するのは、sharp列の基板高さも隣接するgraded列からの
+    裾の侵入を受けて0ではなくなりうるため。
+
+    'graded'な列が1つも無い場合はこの関数を呼ばず、columns_to_layers()に
+    直接渡すこと(既存構造の計算結果を完全に不変に保つため)。
+    """
+    edges = _column_edges(columns)
+    pitch = edges[-1][1] if edges else 0.0
+    if pitch <= 1e-9:
+        return list(columns)
+
+    n_slices = max(1, int(n_slices))
+    out = []
+    for (x1, x2), col in zip(edges, columns):
+        sub_w = (x2 - x1) / n_slices
+        for j in range(n_slices):
+            s_c = x1 + (j + 0.5) * sub_w
+            h = 0.0
+            for (xk1, xk2), ck in zip(edges, columns):
+                Hk = ck.get('subst_raise', 0.0)
+                if Hk <= 1e-9:
+                    continue
+                if ck.get('raise_mode', 'sharp') == 'graded':
+                    hk = _graded_raise_height(Hk, xk1, xk2, s_c, pitch)
+                else:
+                    hk = _sharp_raise_height(Hk, xk1, xk2, s_c)
+                if hk > h:
+                    h = hk
+            out.append({'width': sub_w, 'subst_raise': h, 'film_layers': col['film_layers']})
+    return out
 
 
 def get_layer_tuple(wl, layers, nk_fn_map, n_env_val, nk_subst_fn):
