@@ -1,6 +1,6 @@
 # 引継ぎメモ — 構造色シミュレータ / RCWA・S4・COMSOL比較検証
 
-最終更新: 2026-08-26
+最終更新: 2026-09-17
 
 ## 1. プロジェクトの目的
 
@@ -27,6 +27,170 @@ Streamlitアプリ（`R8_koumyou_v3.py`、旧名R9_koumyou_v2.py）がある。�
 という新しい指摘があり、koumyou側の計算・色変換ロジック自体には問題がないことは
 確認できたが、Gsolver側の実測数値との最終突き合わせがまだ済んでおらず**未解決の
 まま次回セッションに持ち越し**（詳細は4節の該当項目、次にやるべきことも記載）。
+
+**【2026-08-27】** 2026-08-26に未解決だった2col_51_81構造（TiO2=51nm/SiO2=81nm、
+周期1200nm）について、ユーザーがGsolverとkoumyouの反射率実測値を直接突き合わせ、
+**「完全に一致した」と報告**。ただし、このセッションでは提供されたCSV
+（`angle_Rs_タイムスタンプ.csv`形式）がGsolverの生データなのか、koumyouアプリ自身の
+「Angle CSV Rs」ダウンロード機能（[R8_koumyou_v3.py:944](R8_koumyou_v3.py#L944)付近）
+の出力を再エクスポートしたものなのかの確認が完了する前に、別の話題（下記の
+なだらか基板上げプロファイル機能）へ移ったため、**このセッションでの独立した
+数値検証（mean|diff|等の算出）は行っていない**。ユーザーの一致報告は信頼できると
+見てよいが、次回セッションで機会があればCSVの出所だけ確認しておくとよい。
+
+**【2026-09-07】色スウォッチ・角度チャート・スペクトルチャートを
+`Gsolver'S COLOR.html`（参考のスタンドアロンHTMLツール）と完全に見た目・機能を
+統一**: `R8_koumyou_v4.py`の`st.color_picker`/Plotlyベースの表示を、そのHTML
+ツールのCSS/JSをほぼ検証済みのまま移植した`RCWA2D/color_display.py`+
+`RCWA2D/color_display_template.html`（`st.components.v1.html()`で埋め込み）に
+置き換えた。統一に伴い、Rp/Rs切替をスウォッチ・角度チャート・スペクトルチャートで
+別々にあった3つのラジオボタンから1つ（`disp_pol`）に統合し、角度チャートの表示
+波長もHTML版と同じ固定5本(400/470/540/600/700nm)にした（`sel_wls`マルチセレクトは
+削除）。「スクリーンショット用に表示」ボタンで3セクション全てが連動してcapture-mode
+表示に切り替わる（ヘッダー非表示含む）。詳細はコード内のDEVIATIONコメント3箇所
+（スウォッチ用matrixを掃引matrixから独立させた・密な角度掃引での凡例デフォルト
+選択をnearestValue化・`spectrumHideOffLegend`初期値をtrueに変更）を参照。
+実際に`streamlit run R8_koumyou_v4.py`で起動しての最終的な目視確認（HTML版との
+並べ比較）はまだ行っていない。
+
+**【2026-08-27】なめらか基板上げプロファイル（Graded raise）機能を追加**:
+ユーザーから、実際のリソグラフィ/エッチング断面に近い「肩の丸まったなだらかな
+基板上げプロファイル」をkoumyouアプリで扱えるようにしたいとの要望があり、
+次の式が提示された:
+```
+h(s) = H * exp(-|((2*s-x1-x2)/(x2-x1))|^n),  n = 0.02*(x2-x1)
+```
+（H=基板上げのピーク高さ、x1/x2=列の絶対左右端、s=横方向位置。列の幅が
+広いほど次数nが大きくなり、肩の切り立った台形に近づく。列端(s=x1,x2)でも
+高さはH/e≈0.37Hまでしか下がらず、真の0への収束は隣接列側でなだらかに起こる）。
+
+方針検討でPlan agentによるレビューを実施し、当初案の2つの実バグ
+（周期全体を均等分割すると狭い列がfilm_layersを失いうる／周期境界での
+裾の回り込みを見落としていた）を修正した上で実装:
+- **列ごとに自分自身の幅をn_slices等分**する方式を採用（周期全体の均等分割
+  ではない）。所属列は常に一意に決まりfilm_layersが消失することはなく、
+  幅の合計も厳密に保存される。
+- 裾が隣接列へ物理的に侵入することを許容（列内でクリップしない）。かつ
+  周期境界(s=0/pitch)をまたいだ裾の回り込みも s±pitch の2次像で評価。
+- `abs(u)**n`の計算はnumpy経由にし、極端な列幅でも`OverflowError`にならず
+  `inf→exp(-inf)=0.0`に自然減衰するようにした。
+- 既存の検証済みコア（`columns_to_layers`/`_expand_to_bands`）には一切
+  手を入れず、「列リスト→より細かい列リスト」への前処理関数
+  `expand_graded_columns()`（`RCWA2D/structure_builder.py`）を新設し、
+  その出力をそのまま渡す設計にした。'graded'な列が1つも無ければこの新関数
+  自体を呼ばないため、既存構造の計算結果は完全に不変（回帰リスクなし）。
+- アプリ本体は`R8_koumyou_v3.py`を直接編集せず、コピーした
+  **`R8_koumyou_v4.py`** に実装（過去のv2→v3と同じ、バージョンファイルを
+  分ける慣習に合わせた）。v3は無変更のまま。列UIに「上げ形状」選択
+  （sharp/graded）、graded列がある場合のみ表示される分割数(n_slices)入力
+  （'taper'のn_slicesと同じ2〜100レンジ、デフォルト10）を追加。
+- **注意（性能）**: 上げ高さが列内で連続的に変わることで、その上の膜層境界も
+  それぞれズレるため、`columns_to_layers`が生成するRCWA解析層数は概ね
+  n_slices×膜層数のオーダーで増える。特にS4は1点あたりの計算が遅いため、
+  graded機能使用時はS4計算が大きく遅くなりうる（UIのhelpテキストに明記済み）。
+- **検証結果**: 幅保存則・列端でH/eになること・sharp隣接列への裾の侵入と
+  周期境界での回り込み・極端な幅でのオーバーフロー未発生・全列sharpなら
+  新パスが呼ばれず既存動作が不変であること、をWindowsネイティブの数値
+  チェックで確認済み。実際にrcwa_mhで2列構造（幅900 sharp + 幅300 graded,
+  H=235nm, TiO2/SiO2ペア3組）を計算しn_slices収束も確認: n_slices=10/20/40を
+  基準n_slices=80と比較してmean|diff|=0.019/0.012/0.002と単調収束（詳細な
+  比較スクリプトはこのセッションでは一時実行のみで未保存）。Streamlit
+  AppTestでも列追加→subst_raise設定→raise_modeをgradedに切替→
+  graded_n_slices操作、の一連の操作が例外なく動作することを確認済み。
+- **未実施（次回セッションへ）**: 実際に`streamlit run R8_koumyou_v4.py`
+  （WSL）を起動しての目視確認（断面図がユーザー提供の参考画像の丸みを
+  帯びた形状と一致するか）はこのセッションでは行っていない。またS4
+  バックエンドでのgraded構造の動作確認もWindows側では未実施（S4はWSL限定）。
+
+**【2026-08-27 マシン移行】** このPCのスペック不足のため、上記の目視確認以降の
+作業は**別のPCで継続する**方針になった。移行先PCでのセットアップ手順:
+1. GitHubリモート`origin`（`https://github.com/o-mori-1223/koumyou_sim-v2.git`、
+   このセッションで確認済み）から`git clone`（または既にクローン済みならこの
+   セッションで作成したコミットを`git pull`）する。**このセッション終了時点で
+   `HANDOVER.md`, `RCWA2D/structure_builder.py`, `R8_koumyou_v4.py`,
+   `requirements.txt`にまだコミットされていない変更が残っている**ので、
+   移行前にこのPC側でコミット（可能なら`git push`）しておくこと。
+2. Windows側: Python **3.11系**の仮想環境を作成し
+   （`RCWA2D/rcwa_mh.cp311-win_amd64.pyd`がcp311向けビルドのため、
+   3.12以降のPythonでは`import`できず再ビルドが必要になる）、
+   新規追加した`requirements.txt`から`pip install -r requirements.txt`する
+   （streamlit/numpy/pandas/scipy/plotly/colour-scienceの版数を固定済み）。
+   `rcwa_mh`自体はビルド済み`.pyd`が`RCWA2D/`直下にあるので追加ビルド不要。
+3. WSL側（S4を使う場合）: 2.1〜2.2節の`~/s4env`環境を移行先PCでも改めて
+   構築する必要がある（このセッションでは未実施・未検証。WSL2 + Ubuntuの
+   セットアップからやり直しになる可能性が高い）。
+4. 移行後、まず`streamlit run R8_koumyou_v4.py`（Windows側`.venv`で可、
+   S4は使わずrcwa_mhのみのgraded raise機能確認だけならWSL不要）を起動し、
+   本メモの「未実施」項目（断面図の目視確認）から再開すること。
+
+**【2026-09-17 新規テーマ・進行中】孤立ナノ円盤の3D FDTD散乱シミュレータ（MEEP）**:
+ここまでのRCWA/S4/Gsolver/COMSOL比較検証とは別の、**全く新しいテーマ**。ユーザーが
+「ナノ円盤構造」の解析を希望。周期配列ならS4の2D格子モード（未着手・別タスク）で
+対応できるが、ユーザーが選んだのは**基板上の孤立円盤1個**（周期性なし）で、これは
+RCWA/S4では原理的に扱えない。自作Python/numpyで3D FDTDをゼロから書く案は
+「正しさ・速度とも数週間規模の検証が必要で非現実的」と判断し、ユーザー了承のもと
+**MEEP**（MIT製オープンソースFDTD、C++コア+Pythonバインディング）をWSLに導入し
+ラッパーを書く方針に決定。設計はPlan agentのレビューを2回受けている
+（MEEP公式のsphere-in-vacuum Mie散乱チュートリアルを実際に取得して技術詳細を検証）。
+
+*スコープ（Phase 1、承認済み）*: 法線入射のみ・TiO2円盤（無損失, index=2.30）・
+SiO2基板（無損失, index=1.45。損失ありのSUSはPhase 1.5として後日）・
+散乱効率スペクトル1本・0°色スウォッチ1個。角度掃引(30°/60°)はPhase 2として
+明確に先送り——孤立散乱体（全面PML、周期性なし）では1回の広帯域パルスで
+単一角度を波長全体にわたって維持できず、角度×波長ごとに個別runが必要になるため、
+法線入射に対し概算100〜250倍のコストになると試算済み（詳細はPlanエージェントの
+検討過程、および下記ファイルのdocstring参照）。
+
+*環境構築（完了）*: WSLにcondaが無かったため**Miniforge3を新規インストール**
+（`~/miniforge3`）。**教訓: `conda create -n mp -c conda-forge pymeep streamlit numpy`
+を1回のコマンドでやると、streamlitのconda版が引き込む`libarrow`(pyarrow用の
+巨大なC++ライブラリ)のダウンロードでネットワークエラーが起き2回失敗した
+（`| tail`でパイプすると失敗時もexit code 0に化けて見えるので要注意）。
+`conda create -n mp -c conda-forge pymeep numpy`で軽量に作ってから、
+`conda run -n mp pip install streamlit`で後からpip経由で入れると確実に成功した**。
+`mp`環境: pymeep 1.34.0 + numpy(conda) + streamlit 1.64.0(pip)。起動は
+`run_meep3d.sh`（LF改行で保存済み、`conda activate mp`後`streamlit run meep3d_app.py`）。
+
+*新規ファイル*: `MEEP3D/`パッケージ（`materials.py`: data/nk読み込み+`mp.Medium`化、
+`geometry.py`: セル/PML/flux box(6面, 底面はz=0より`box_margin`だけ上)/対称性の
+構築（3モード`vacuum`/`bare_substrate`/`disk`で完全に同一形状、geometryリストだけ
+差し替え）、`simulate.py`: 3-run減算法（Run A=真空でI0取得、Run B=基板のみで
+ベースライン記録、Run C=基板+円盤でRun Bを`load_minus_flux_data`で差し引き）で
+`Q_scatter,up`スペクトルを返す、`color_glue.py`: 既存の`RCWA2D/color_display.py`
+（前セッションで凍結済み、無改造）にそのまま接続）。`meep3d_app.py`（新規
+Streamlitページ、R8_koumyou_v4.pyとは別・無改造）。検証用`diag_meep_sphere_mie.py`
+（MEEP公式Mieチュートリアルの再現、`MEEP3D.simulate._scattering_efficiency_from_fluxes`
+と同じ算術コードを検証）。
+
+*検証状況（途中、次回に持ち越し）*:
+- **sphere-in-vacuum（基板なし）は動作確認済み**。実装当初は2つの実バグがあった:
+  (1) 真空run/球ありrunで対称性設定が食い違っており(`symmetries=[] if with_sphere
+  else symmetries`という誤ったコード)、`load_minus_flux_data`でのデータ形状不一致
+  によりクラッシュ。両runで同じ対称性を使うよう修正。
+  (2) 周波数範囲(frq_cen=1.0, dfrq=2.0)が0を含んでおり`1/freq`でゼロ除算警告。
+  WebFetchでチュートリアルページから正確な数値（`wvl_min=2πr/10`, `wvl_max=2πr/2`,
+  `dpml=dair=0.5*wvl_max`, `resolution=25`）を再取得し、それに合わせて修正。
+  修正後、複数のMie共鳴ピークを持つ物理的に妥当なQsca値（オーダー1.6〜3.6、
+  最初の帯域端1点だけソース強度不足による外れ値——これは想定内）が得られた。
+- **基板ありの円盤ケースは未解決**。パイプライン自体はクラッシュせず、指定した
+  波長範囲(400-800nm)も正しく反映されるようになった（`fcen`/`df`をソース帯域用
+  ・flux監視用で分離する追加修正が必要だった）が、**`Q_scatter,up`が一貫して
+  小さい負の値（-0.0007〜-0.0022程度、resolution=30・n_freq=11のスモークテスト）
+  になっており、物理的に正しくない**（散乱効率は非負のはず）。滑らかに波長変化
+  しており乱数的なノイズには見えないため、何らかの系統的な原因（サイン規約の
+  誤り、またはbox_margin=0.1umが波長(400-800nm)に対して近すぎ、円盤近傍の
+  近接場/エバネッセント成分を誤って拾っている可能性）が疑われるが、
+  **未診断のままこのセッションを終えた**。
+- **次回セッションでまず試すこと**（優先順）:
+  1. ゼロテスト: 円盤材質=基板材質（コントラストなし）にして`run_scattering_spectrum`
+     を実行し、結果がほぼ0に潰れるか確認する。潰れなければ、原因は特定の材質では
+     なくbox/幾何設定そのものにあると切り分けられる。
+  2. `box_margin`を0.1um→0.3〜0.5um程度に広げ、近接場汚染仮説を検証する。
+  3. 符号が正しくなってから、解像度収束確認（30→60→100 px/um）を行う。
+  4. これらに合格して初めて、Phase 1a（TiO2円盤/SiO2基板、400-800nm）の
+     数値を信用してよい。
+- HANDOVER更新時点で`meep3d_app.py`（Streamlit UI）自体はまだ一度も
+  ブラウザで起動確認していない（`run_meep3d.sh`経由での動作確認も未実施）。
 
 以下は上記の突破口が見つかる前の記述（経緯として残す）:
 現在、**S4・rcwa_mh・COMSOLは互いにほぼ一致する場合と、大きく食い違う場合がある**。
@@ -79,10 +243,15 @@ streamlit run R8_koumyou_v3.py
 
 ```
 koumyou_sim/
+├── R8_koumyou_v4.py          # 2026-08-27〜: なめらか基板上げ(graded raise)対応版
+│                             #   （run_koumyou.shはまだv3を指しているので手動起動）
 ├── R8_koumyou_v3.py          # メインのStreamlitアプリ（旧R9_koumyou_v2.py）
 ├── R8_koumyou_v2.py          # さらに旧いバージョン（現状は使っていない）
-├── comsol_reference.py       # 【旧構造】3000nm/6列ケースの構造定義＋COMSOL実測値
-├── diag_*.py                 # 検証・診断用スクリプト群（下記参照）
+├── requirements.txt          # 2026-08-27追加: Windows側.venv用の依存パッケージ一覧
+│                             #   （Python 3.11系が必須。1章末尾のマシン移行手順参照）
+├── verification_archive/     # 2026-08-26archive: 解決済みのRCWA/S4/Gsolver/COMSOL比較
+│                             #   検証一式（comsol_reference*.py, diag_*.py,
+│                             #   gsolver_reference_*.py と関連data/を集約。詳細後述）
 ├── run_koumyou.sh            # WSL起動スクリプト（本体）
 ├── run_koumyou_fdtd.sh       # FDTD版の起動スクリプト（未検証、要確認）
 ├── fdtd_app.py, fdtd_demo.py # FDTD関連のアプリ/デモ（未検証、要確認）
@@ -97,6 +266,8 @@ koumyou_sim/
 │   ├── rcwa_mh.cpython-314-x86_64-linux-gnu.so  # WSL/Linux向けビルド済みバイナリ
 │   ├── rcwa_s4_backend.py     # S4バックエンド（日本語docstring化済み）
 │   ├── structure_builder.py   # 列構造→RCWA水平層リストへの変換（両バックエンド共通）
+│   │                          #   2026-08-27: expand_graded_columns()追加
+│   │                          #   （なめらか基板上げプロファイルの前処理、詳細は4節末尾）
 │   └── eigen-3.4.0/           # C++ビルド依存（Eigenヘッダオンリー）
 └── fdtd2d/                    # 2D FDTDエンジン（未検証、次の課題）
     ├── engine.py, cpml.py, materials.py, geometry.py, simulate.py, color.py
